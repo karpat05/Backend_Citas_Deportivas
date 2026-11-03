@@ -1,0 +1,205 @@
+@baseUrl = http://localhost:3000
+
+###############################################
+# PRUEBAS API DE CITAS (extension REST Client)
+# Haz clic en "Send Request" sobre cada peticion, en orden.
+# El codigo esperado esta en el titulo de cada una.
+###############################################
+
+
+### ===== PROFESIONALES =====
+
+### 1. Listar profesionales (200)
+GET {{baseUrl}}/api/professionals
+
+### 2. Profesional por id (200)
+GET {{baseUrl}}/api/professionals/1
+
+### 3. Profesional inexistente (404)
+GET {{baseUrl}}/api/professionals/999
+
+### 4. Crear profesional (201)
+# @name crearProf
+POST {{baseUrl}}/api/professionals
+Content-Type: application/json
+
+{
+  "name": "Dr. Carlos Mejia",
+  "specialty": "Nutricion deportiva",
+  "attentionStart": "08:00",
+  "attentionEnd": "15:00"
+}
+
+### 5. Crear profesional sin nombre (400)
+POST {{baseUrl}}/api/professionals
+Content-Type: application/json
+
+{
+  "name": "",
+  "specialty": "Fisioterapia",
+  "attentionStart": "08:00",
+  "attentionEnd": "15:00"
+}
+
+### 6. Crear profesional con horario invalido (400)
+POST {{baseUrl}}/api/professionals
+Content-Type: application/json
+
+{
+  "name": "Dr. Prueba",
+  "specialty": "Fisioterapia",
+  "attentionStart": "17:00",
+  "attentionEnd": "08:00"
+}
+
+### 7. JSON mal formado (400)
+POST {{baseUrl}}/api/professionals
+Content-Type: application/json
+
+{ "name": "mal formado",
+
+### 8. Actualizar el profesional creado en el paso 4 (200)
+PUT {{baseUrl}}/api/professionals/{{crearProf.response.body.$.id}}
+Content-Type: application/json
+
+{
+  "name": "Dr. Carlos Mejia",
+  "specialty": "Nutricion y rendimiento",
+  "attentionStart": "09:00",
+  "attentionEnd": "16:00"
+}
+
+
+### ===== CITAS =====
+
+### 9. Crear cita (201)
+# @name crearCita
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Juan Perez",
+  "professionalId": 1,
+  "date": "2026-10-15",
+  "startTime": "09:00",
+  "endTime": "10:00",
+  "reason": "Revision de rodilla"
+}
+
+### 10. Cita que se cruza de horario - REGLA DE NEGOCIO (409)
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Maria Lopez",
+  "professionalId": 1,
+  "date": "2026-10-15",
+  "startTime": "09:30",
+  "endTime": "10:30",
+  "reason": "Control general"
+}
+
+### 11. Cita fuera del horario del profesional (400)
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Maria Lopez",
+  "professionalId": 1,
+  "date": "2026-10-16",
+  "startTime": "06:00",
+  "endTime": "07:00",
+  "reason": "Control general"
+}
+
+### 12. Cita con profesional inexistente (404)
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Maria Lopez",
+  "professionalId": 999,
+  "date": "2026-10-16",
+  "startTime": "10:00",
+  "endTime": "11:00",
+  "reason": "Control general"
+}
+
+### 13. Cita con fecha invalida (400)
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Maria Lopez",
+  "professionalId": 1,
+  "date": "2026-02-31",
+  "startTime": "10:00",
+  "endTime": "11:00",
+  "reason": "Control general"
+}
+
+### 14. Cita con hora de fin menor que la de inicio (400)
+POST {{baseUrl}}/api/appointments
+Content-Type: application/json
+
+{
+  "athleteName": "Maria Lopez",
+  "professionalId": 1,
+  "date": "2026-10-16",
+  "startTime": "11:00",
+  "endTime": "10:00",
+  "reason": "Control general"
+}
+
+### 15. Listar citas (200)
+GET {{baseUrl}}/api/appointments
+
+### 16. Filtro por profesional y fecha (200)
+GET {{baseUrl}}/api/appointments?professionalId=1&date=2026-10-15
+
+### 17. Filtro por estado (200)
+GET {{baseUrl}}/api/appointments?status=PENDIENTE
+
+### 18. Cita por id (200)
+GET {{baseUrl}}/api/appointments/{{crearCita.response.body.$.id}}
+
+### 19. Cita inexistente (404)
+GET {{baseUrl}}/api/appointments/999
+
+### 20. Actualizar cita (200)
+PUT {{baseUrl}}/api/appointments/{{crearCita.response.body.$.id}}
+Content-Type: application/json
+
+{
+  "athleteName": "Juan Perez",
+  "professionalId": 1,
+  "date": "2026-10-15",
+  "startTime": "11:00",
+  "endTime": "12:00",
+  "status": "PENDIENTE",
+  "reason": "Revision de rodilla"
+}
+
+### 21. Eliminar profesional que tiene citas (409)
+DELETE {{baseUrl}}/api/professionals/1
+
+### 22. Cancelar cita (200)
+PATCH {{baseUrl}}/api/appointments/{{crearCita.response.body.$.id}}/cancel
+
+### 23. Cancelar cita que ya esta cancelada (409)
+PATCH {{baseUrl}}/api/appointments/{{crearCita.response.body.$.id}}/cancel
+
+### 24. Eliminar cita (204)
+DELETE {{baseUrl}}/api/appointments/{{crearCita.response.body.$.id}}
+
+### 25. Eliminar cita inexistente (404)
+DELETE {{baseUrl}}/api/appointments/999
+
+### 26. Eliminar profesional sin citas, el creado en el paso 4 (204)
+DELETE {{baseUrl}}/api/professionals/{{crearProf.response.body.$.id}}
+
+
+### ===== RUTA INEXISTENTE =====
+
+### 27. Ruta que no existe (404)
+GET {{baseUrl}}/api/nada
