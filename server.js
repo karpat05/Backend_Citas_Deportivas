@@ -13,11 +13,27 @@ const STATUSES = ['PENDIENTE', 'ATENDIDA', 'CANCELADA'];
 // ---------- Utilidades ----------
 const isText = (v) => typeof v === 'string' && v.trim().length > 0;
 const isAdmin = (req) => req.user.role === 'ADMIN';
+const isProfessional = (req) => req.user.role === 'PROFESSIONAL';
+
+// ¿Puede esta persona ver o modificar esta cita?
+// ADMIN: todas. PROFESSIONAL: las de su propio perfil. USER: las que agendó él.
+const canAccess = (req, row) => {
+  if (isAdmin(req)) return true;
+  if (isProfessional(req)) return row.professional_id === req.user.professionalId;
+  return row.user_id === req.user.id;
+};
 
 const isValidDate = (v) => {
   if (typeof v !== 'string' || !DATE_RE.test(v)) return false;
   const d = new Date(v + 'T00:00:00Z');
   return !isNaN(d.getTime()) && d.toISOString().slice(0, 10) === v;
+};
+
+// Fecha de hoy (hora local del servidor) como AAAA-MM-DD, para rechazar citas en el pasado
+const todayLocal = () => {
+  const d = new Date();
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 };
 
 const toProfessional = (r) => ({
@@ -177,19 +193,47 @@ app.delete('/api/professionals/:id', auth.requireRole('ADMIN'), (req, res) => {
   res.status(204).send();
 });
 
+// Crear el acceso (correo y contraseña) de un profesional existente: solo ADMIN
+app.post('/api/professionals/:id/account', auth.requireRole('ADMIN'), (req, res) => {
+  const prof = db.prepare('SELECT * FROM professionals WHERE id = ?').get(req.params.id);
+  if (!prof) return fail(res, 404, 'Profesional no encontrado');
+  const b = req.body || {};
+  if (!EMAIL_RE.test(b.email || '')) return fail(res, 400, 'El correo no es válido');
+  if (typeof b.password !== 'string' || b.password.length < 6)
+    return fail(res, 400, 'La contraseña debe tener al menos 6 caracteres');
+  if (db.prepare("SELECT id FROM users WHERE role = 'PROFESSIONAL' AND professional_id = ?").get(prof.id))
+    return fail(res, 409, 'Este profesional ya tiene una cuenta');
+  const email = b.email.trim().toLowerCase();
+  if (db.prepare('SELECT id FROM users WHERE email = ?').get(email))
+    return fail(res, 409, 'Ya existe una cuenta con ese correo');
+  const info = db
+    .prepare(
+      "INSERT INTO users (name, email, password_hash, role, professional_id) VALUES (?, ?, ?, 'PROFESSIONAL', ?)"
+    )
+    .run(prof.name, email, auth.hashPassword(b.password), prof.id);
+  const user = db.prepare('SELECT * FROM users WHERE id = ?').get(info.lastInsertRowid);
+  res.status(201).json(auth.publicUser(user));
+});
+
 // ---------- CITAS ----------
-// ADMIN ve todas las citas. USER ve solo las suyas.
+// ADMIN ve todas las citas. PROFESSIONAL ve solo las de su perfil. USER ve solo las suyas.
 // Filtros opcionales: ?professionalId=1&date=2026-10-15&status=PENDIENTE
 app.get('/api/appointments', (req, res) => {
   const where = [];
   const params = [];
-  if (!isAdmin(req)) {
-    where.push('user_id = ?');
-    params.push(req.user.id);
-  }
-  if (req.query.professionalId) {
+  if (isProfessional(req)) {
+    // El profesional siempre queda limitado a su perfil, aunque mande otro professionalId
     where.push('professional_id = ?');
-    params.push(req.query.professionalId);
+    params.push(req.user.professionalId);
+  } else {
+    if (!isAdmin(req)) {
+      where.push('user_id = ?');
+      params.push(req.user.id);
+    }
+    if (req.query.professionalId) {
+      where.push('professional_id = ?');
+      params.push(req.query.professionalId);
+    }
   }
   if (req.query.date) {
     where.push('date = ?');
@@ -208,16 +252,20 @@ app.get('/api/appointments', (req, res) => {
 
 app.get('/api/appointments/:id', (req, res) => {
   const row = db.prepare('SELECT * FROM appointments WHERE id = ?').get(req.params.id);
-  if (!row || (!isAdmin(req) && row.user_id !== req.user.id))
-    return fail(res, 404, 'Cita no encontrada');
+  if (!row || !canAccess(req, row)) return fail(res, 404, 'Cita no encontrada');
   res.json(toAppointment(row));
 });
 
 // Cualquier usuario con sesión puede agendar. Si es USER, la cita queda a su nombre.
 app.post('/api/appointments', (req, res) => {
+  if (isProfessional(req))
+    return fail(res, 403, 'Los profesionales no pueden agendar citas');
   const b = isAdmin(req)
     ? { ...req.body }
     : { ...req.body, athleteName: req.user.name };
+  // Solo al agendar: editar una cita que ya pasó (PUT) sí se permite
+  if (isValidDate(b.date) && b.date < todayLocal())
+    return fail(res, 400, 'No se pueden agendar citas en fechas pasadas');
   const problem = checkAppointment(b);
   if (problem) return fail(res, problem.code, problem.error);
   const ownerId = isAdmin(req) ? null : req.user.id;
@@ -263,11 +311,10 @@ app.delete('/api/appointments/:id', auth.requireRole('ADMIN'), (req, res) => {
   res.status(204).send();
 });
 
-// Cancelar: ADMIN cualquier cita, USER solo las suyas
+// Cancelar: ADMIN cualquier cita, PROFESSIONAL las de su perfil, USER solo las suyas
 app.patch('/api/appointments/:id/cancel', (req, res) => {
   const current = db.prepare('SELECT * FROM appointments WHERE id = ?').get(req.params.id);
-  if (!current || (!isAdmin(req) && current.user_id !== req.user.id))
-    return fail(res, 404, 'Cita no encontrada');
+  if (!current || !canAccess(req, current)) return fail(res, 404, 'Cita no encontrada');
   if (current.status === 'CANCELADA') return fail(res, 409, 'La cita ya está cancelada');
   if (current.status === 'ATENDIDA')
     return fail(res, 409, 'No se puede cancelar una cita que ya fue atendida');
@@ -276,10 +323,10 @@ app.patch('/api/appointments/:id/cancel', (req, res) => {
   res.json(toAppointment(row));
 });
 
-// Marcar como atendida: solo ADMIN, y solo si la cita sigue pendiente
-app.patch('/api/appointments/:id/attend', auth.requireRole('ADMIN'), (req, res) => {
+// Marcar como atendida: ADMIN o el PROFESSIONAL dueño de la cita, y solo si sigue pendiente
+app.patch('/api/appointments/:id/attend', auth.requireRole('ADMIN', 'PROFESSIONAL'), (req, res) => {
   const current = db.prepare('SELECT * FROM appointments WHERE id = ?').get(req.params.id);
-  if (!current) return fail(res, 404, 'Cita no encontrada');
+  if (!current || !canAccess(req, current)) return fail(res, 404, 'Cita no encontrada');
   if (current.status === 'ATENDIDA') return fail(res, 409, 'La cita ya fue marcada como atendida');
   if (current.status === 'CANCELADA')
     return fail(res, 409, 'No se puede marcar como atendida una cita cancelada');
