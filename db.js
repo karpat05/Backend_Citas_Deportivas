@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 
-const db = new Database('citas.db');
+// En la nube la ruta del archivo se puede cambiar con la variable DB_PATH; en tu PC usa citas.db
+const db = new Database(process.env.DB_PATH || 'citas.db');
 db.pragma('foreign_keys = ON');
 
 db.exec(`

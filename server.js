@@ -1,3 +1,7 @@
+// Zona horaria de Colombia. Los servidores en la nube trabajan en UTC y, sin esto,
+// "hoy" cambiaría cinco horas antes (la regla de fechas pasadas rechazaría citas de hoy por la noche).
+process.env.TZ = process.env.TZ || 'America/Bogota';
+
 const express = require('express');
 const db = require('./db');
 const auth = require('./auth');
@@ -284,9 +288,38 @@ app.post('/api/appointments', (req, res) => {
 });
 
 // Editar y eliminar: solo ADMIN
-app.put('/api/appointments/:id', auth.requireRole('ADMIN'), (req, res) => {
+// Modificar una cita:
+// - ADMIN puede cambiarlo todo (deportista, profesional, fecha, hora, estado y motivo).
+// - USER solo reprograma SU cita pendiente: puede cambiar fecha, hora y motivo.
+//   El profesional, el estado y el nombre del deportista no cambian aunque los mande.
+// En los dos casos se vuelve a validar el cruce de horarios (la cita no choca consigo misma).
+app.put('/api/appointments/:id', auth.requireRole('ADMIN', 'USER'), (req, res) => {
   const current = db.prepare('SELECT * FROM appointments WHERE id = ?').get(req.params.id);
-  if (!current) return fail(res, 404, 'Cita no encontrada');
+  if (!current || !canAccess(req, current)) return fail(res, 404, 'Cita no encontrada');
+
+  if (!isAdmin(req)) {
+    if (current.status !== 'PENDIENTE')
+      return fail(res, 409, 'Solo se pueden modificar las citas pendientes');
+    const body = req.body || {};
+    const data = {
+      athleteName: current.athlete_name,
+      professionalId: current.professional_id,
+      date: body.date,
+      startTime: body.startTime,
+      endTime: body.endTime,
+      reason: body.reason,
+    };
+    if (isValidDate(data.date) && data.date < todayLocal())
+      return fail(res, 400, 'No se pueden agendar citas en fechas pasadas');
+    const issue = checkAppointment(data, current.id);
+    if (issue) return fail(res, issue.code, issue.error);
+    db.prepare(
+      'UPDATE appointments SET date = ?, start_time = ?, end_time = ?, reason = ? WHERE id = ?'
+    ).run(data.date, data.startTime, data.endTime, data.reason.trim(), current.id);
+    const updated = db.prepare('SELECT * FROM appointments WHERE id = ?').get(current.id);
+    return res.json(toAppointment(updated));
+  }
+
   const b = req.body;
   const status = b.status || current.status;
   if (!STATUSES.includes(status))
@@ -335,6 +368,12 @@ app.patch('/api/appointments/:id/attend', auth.requireRole('ADMIN', 'PROFESSIONA
   res.json(toAppointment(row));
 });
 
+// ---------- Estado del servicio (públicas, sin sesión) ----------
+// "/" sirve para comprobar rápido en el navegador que la API está encendida;
+// "/health" es liviana y sirve para que un monitor la consulte cada pocos minutos.
+app.get('/', (req, res) => res.json({ servicio: 'API Citas Deportivas', estado: 'en línea' }));
+app.get('/health', (req, res) => res.json({ status: 'ok' }));
+
 // ---------- Errores ----------
 app.use((req, res) => fail(res, 404, 'Ruta no encontrada'));
 
@@ -344,5 +383,33 @@ app.use((err, req, res, next) => {
   fail(res, 500, 'Error interno del servidor');
 });
 
-const PORT = 3000;
-app.listen(PORT, () => console.log(`API de citas lista en http://localhost:${PORT}`));
+// Datos de demostración (opcional). En un servicio gratuito la base de datos se reinicia cuando el
+// servicio se duerme o se vuelve a desplegar; con SEED_DEMO=true se crean 3 citas de ejemplo
+// (mañana y pasado mañana, dentro del horario de cada profesional) para que la agenda no quede vacía.
+if (
+  process.env.SEED_DEMO === 'true' &&
+  db.prepare('SELECT COUNT(*) AS c FROM appointments').get().c === 0
+) {
+  const athlete = db.prepare("SELECT id, name FROM users WHERE email = 'deportista@citas.com'").get();
+  const profs = db.prepare('SELECT id FROM professionals ORDER BY id LIMIT 2').all();
+  if (athlete && profs.length >= 2) {
+    const inDays = (n) => {
+      const d = new Date();
+      d.setDate(d.getDate() + n);
+      const pad = (x) => String(x).padStart(2, '0');
+      return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    };
+    const add = db.prepare(
+      `INSERT INTO appointments (athlete_name, professional_id, date, start_time, end_time, status, reason, user_id)
+       VALUES (?, ?, ?, ?, ?, 'PENDIENTE', ?, ?)`
+    );
+    add.run(athlete.name, profs[0].id, inDays(1), '09:00', '10:00', 'Dolor de rodilla', athlete.id);
+    add.run(athlete.name, profs[0].id, inDays(1), '10:00', '11:00', 'Control de lesión', athlete.id);
+    add.run(athlete.name, profs[1].id, inDays(2), '11:00', '12:00', 'Evaluación deportiva', athlete.id);
+    console.log('Citas de demostración creadas');
+  }
+}
+
+// En la nube el puerto lo asigna la plataforma (variable PORT); en tu PC se usa el 3000
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => console.log(`API de citas lista en el puerto ${PORT}`));
